@@ -1,5 +1,6 @@
 # DAX Query Syntax Documentation
 
+## EVALUATE
 EVALUATE <table_expression>
 
 The EVALUATE statement is required to return a table in DAX. Every query must start with EVALUATE.
