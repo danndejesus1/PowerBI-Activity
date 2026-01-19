@@ -1,0 +1,8 @@
+streamlit>=1.28
+python-dotenv
+requests
+beautifulsoup4
+openai
+msal>=1.24
+pandas
+openpyxl
