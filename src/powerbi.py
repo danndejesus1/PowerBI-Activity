@@ -174,38 +174,149 @@ def get_auto_insights_from_agent(prompt, context):
         filtered_table = f"FILTER('flights', {filter_clause})" if filter_clause else "'flights'"
         stats = {}
         
+        # Helper to extract value from DAX result
+        def extract_value(result):
+            try:
+                return list(result.get("results", [{}])[0].get("tables", [{}])[0].get("rows", [])[0].values())[0]
+            except: return None
+        
+        # Total flights
         result, err = execute_dax_query(f'EVALUATE ROW("Total", COUNTROWS({filtered_table}))')
         if not err and result:
-            try: stats['total_flights'] = list(result.get("results", [{}])[0].get("tables", [{}])[0].get("rows", [])[0].values())[0]
-            except: pass
+            stats['total_flights'] = extract_value(result) or 0
         
+        # Average departure delay
         query = f'EVALUATE ROW("AvgDelay", CALCULATE(AVERAGE(\'flights\'[DEPARTURE_DELAY]), {filter_clause}))' if filter_clause else 'EVALUATE ROW("AvgDelay", AVERAGE(\'flights\'[DEPARTURE_DELAY]))'
         result, err = execute_dax_query(query)
         if not err and result:
-            try:
-                val = list(result.get("results", [{}])[0].get("tables", [{}])[0].get("rows", [])[0].values())[0]
-                stats['avg_delay'] = round(val, 1) if val else 0
-            except: pass
+            val = extract_value(result)
+            stats['avg_delay'] = round(val, 1) if val else 0
         
+        # Max delay
+        query = f'EVALUATE ROW("MaxDelay", CALCULATE(MAX(\'flights\'[DEPARTURE_DELAY]), {filter_clause}))' if filter_clause else 'EVALUATE ROW("MaxDelay", MAX(\'flights\'[DEPARTURE_DELAY]))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            val = extract_value(result)
+            stats['max_delay'] = round(val, 1) if val else 0
+        
+        # Min delay (can be negative = early)
+        query = f'EVALUATE ROW("MinDelay", CALCULATE(MIN(\'flights\'[DEPARTURE_DELAY]), {filter_clause}))' if filter_clause else 'EVALUATE ROW("MinDelay", MIN(\'flights\'[DEPARTURE_DELAY]))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            val = extract_value(result)
+            stats['min_delay'] = round(val, 1) if val else 0
+        
+        # On-time flights (delay <= 0)
+        if filter_clause:
+            query = f'EVALUATE ROW("OnTime", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] <= 0)), {filter_clause}))'
+        else:
+            query = 'EVALUATE ROW("OnTime", COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] <= 0)))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            stats['on_time'] = extract_value(result) or 0
+        
+        # Slight delay (1-15 min)
+        if filter_clause:
+            query = f'EVALUATE ROW("SlightDelay", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 0 && \'flights\'[DEPARTURE_DELAY] <= 15)), {filter_clause}))'
+        else:
+            query = 'EVALUATE ROW("SlightDelay", COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 0 && \'flights\'[DEPARTURE_DELAY] <= 15)))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            stats['slight_delay'] = extract_value(result) or 0
+        
+        # Moderate delay (16-60 min)
+        if filter_clause:
+            query = f'EVALUATE ROW("ModerateDelay", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 15 && \'flights\'[DEPARTURE_DELAY] <= 60)), {filter_clause}))'
+        else:
+            query = 'EVALUATE ROW("ModerateDelay", COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 15 && \'flights\'[DEPARTURE_DELAY] <= 60)))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            stats['moderate_delay'] = extract_value(result) or 0
+        
+        # Severe delay (>60 min)
+        if filter_clause:
+            query = f'EVALUATE ROW("SevereDelay", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 60)), {filter_clause}))'
+        else:
+            query = 'EVALUATE ROW("SevereDelay", COUNTROWS(FILTER(\'flights\', \'flights\'[DEPARTURE_DELAY] > 60)))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            stats['severe_delay'] = extract_value(result) or 0
+        
+        # Cancelled flights
         query = f'EVALUATE ROW("Cancelled", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[CANCELLED] = 1)), {filter_clause}))' if filter_clause else 'EVALUATE ROW("Cancelled", COUNTROWS(FILTER(\'flights\', \'flights\'[CANCELLED] = 1)))'
         result, err = execute_dax_query(query)
         if not err and result:
-            try: stats['cancelled'] = list(result.get("results", [{}])[0].get("tables", [{}])[0].get("rows", [])[0].values())[0]
-            except: pass
+            stats['cancelled'] = extract_value(result) or 0
+        
+        # Diverted flights
+        query = f'EVALUATE ROW("Diverted", CALCULATE(COUNTROWS(FILTER(\'flights\', \'flights\'[DIVERTED] = 1)), {filter_clause}))' if filter_clause else 'EVALUATE ROW("Diverted", COUNTROWS(FILTER(\'flights\', \'flights\'[DIVERTED] = 1)))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            stats['diverted'] = extract_value(result) or 0
+        
+        # Average arrival delay
+        query = f'EVALUATE ROW("AvgArrDelay", CALCULATE(AVERAGE(\'flights\'[ARRIVAL_DELAY]), {filter_clause}))' if filter_clause else 'EVALUATE ROW("AvgArrDelay", AVERAGE(\'flights\'[ARRIVAL_DELAY]))'
+        result, err = execute_dax_query(query)
+        if not err and result:
+            val = extract_value(result)
+            stats['avg_arrival_delay'] = round(val, 1) if val else 0
+        
+        # Calculate percentages
+        total = stats.get('total_flights', 0) or 1  # Avoid division by zero
+        stats['on_time_pct'] = round((stats.get('on_time', 0) / total) * 100, 1)
+        stats['slight_delay_pct'] = round((stats.get('slight_delay', 0) / total) * 100, 1)
+        stats['moderate_delay_pct'] = round((stats.get('moderate_delay', 0) / total) * 100, 1)
+        stats['severe_delay_pct'] = round((stats.get('severe_delay', 0) / total) * 100, 1)
+        stats['cancellation_rate'] = round((stats.get('cancelled', 0) / total) * 100, 2)
+        stats['diversion_rate'] = round((stats.get('diverted', 0) / total) * 100, 2)
         
         filter_text = ", ".join(filter_desc) if filter_desc else "No filters (full dataset)"
-        stats_summary = f"""Filtered Data Stats ({filter_text}):
+        
+        stats_summary = f"""📊 **Filtered Data Analysis** ({filter_text}):
+
+**Overview:**
 - Total Flights: {stats.get('total_flights', 0):,}
-- Average Delay: {stats.get('avg_delay', 'N/A')} minutes
-- Cancelled Flights: {stats.get('cancelled', 'N/A'):,}"""
+- On-Time Performance: {stats.get('on_time_pct', 0)}% ({stats.get('on_time', 0):,} flights)
+
+**Delay Breakdown:**
+- Average Departure Delay: {stats.get('avg_delay', 'N/A')} minutes
+- Average Arrival Delay: {stats.get('avg_arrival_delay', 'N/A')} minutes
+- Min Delay: {stats.get('min_delay', 'N/A')} min | Max Delay: {stats.get('max_delay', 'N/A')} min
+- On-Time/Early (≤0 min): {stats.get('on_time', 0):,} ({stats.get('on_time_pct', 0)}%)
+- Slight Delay (1-15 min): {stats.get('slight_delay', 0):,} ({stats.get('slight_delay_pct', 0)}%)
+- Moderate Delay (16-60 min): {stats.get('moderate_delay', 0):,} ({stats.get('moderate_delay_pct', 0)}%)
+- Severe Delay (>60 min): {stats.get('severe_delay', 0):,} ({stats.get('severe_delay_pct', 0)}%)
+
+**Cancellations & Diversions:**
+- Cancelled Flights: {stats.get('cancelled', 0):,} ({stats.get('cancellation_rate', 0)}%)
+- Diverted Flights: {stats.get('diverted', 0):,} ({stats.get('diversion_rate', 0)}%)"""
         
         response = client.chat.completions.create(
             model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
             messages=[
-                {"role": "system", "content": "You are a flight data analyst. Provide brief, insightful summaries (2-3 sentences max). Be specific with numbers. Mention the filter applied."},
+                {"role": "system", "content": """You are a flight data analyst specializing in operational performance. Analyze the Power BI flight dashboard metrics.
+
+The dashboard shows:
+- **Total Flights Card**: Volume of flights analyzed
+- **Avg Delay Card**: Average departure delay in minutes
+- **Cancellation Rate Card**: Percentage of cancelled flights
+- **Delay Breakdown Pie Chart**: Distribution of delay minutes by type (Air System Delays, Airline Delays, Late Aircraft Delays, Security Delays, Weather Delays)
+- **Cancellations Over Time**: Monthly trend of cancellations showing seasonal patterns
+
+Structure your response with exactly 4 numbered insights:
+
+1. **Performance Summary** (1-2 sentences): Assess overall on-time rate and total flight volume. What does the average delay indicate about operational health?
+
+2. **Operational Insight** (2-3 sentences): Analyze the Delay Breakdown pie chart. Which delay type dominates? What percentage does it represent? What operational factors does this suggest (e.g., weather impact, airline operations, infrastructure)?
+
+3. **Disruption Assessment** (1-2 sentences): Evaluate the cancellation rate and its trend over time. Are there seasonal patterns? How does this compare to industry norms (typically 1-2%)?
+
+4. **Actionable Takeaway** (1 sentence): Based on delay types and cancellation trends, what is the single most impactful action to improve performance?
+
+Always cite specific numbers and percentages from the stats provided. Be analytical and operational-focused."""},
                 {"role": "user", "content": f"{prompt}\n\n{stats_summary}"}
             ],
-            max_tokens=150, temperature=0.3
+            max_tokens=400, temperature=0.3
         )
         return response.choices[0].message.content
     except Exception as e:
