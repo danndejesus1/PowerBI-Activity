@@ -4,56 +4,39 @@ import requests
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 import msal
-import easyocr
-from PIL import Image
-import io
-import pyautogui
-import numpy as np
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+# Import agent setup from separate module
+from dax_agent import create_dax_agent
 
 load_dotenv()
 
+# Azure OpenAI setup
 client = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
 )
-deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
 AAD_TENANT_ID = os.getenv("AAD_TENANT_ID")
 AAD_CLIENT_ID = os.getenv("AAD_CLIENT_ID")
 AAD_CLIENT_SECRET = os.getenv("AAD_CLIENT_SECRET")
-
 POWERBI_WORKSPACE_ID = os.getenv("POWERBI_WORKSPACE_ID")
-POWERBI_DATASET_ID = os.getenv("POWERBI_DATASET_ID")
 POWERBI_REPORT_ID = os.getenv("POWERBI_REPORT_ID")
 
-DEFAULT_TIMEOUT = 30
-session = requests.Session()
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
-)
-adapter = HTTPAdapter(max_retries=retry_strategy)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
+# Create DAX agent and get system prompt
+agent_executor, system_prompt = create_dax_agent()
 
+# Helper function for Power BI token
 def get_powerbi_access_token():
     if not all([AAD_TENANT_ID, AAD_CLIENT_ID, AAD_CLIENT_SECRET]):
         return None, "Missing Azure AD credentials"
-    
     try:
         app = msal.ConfidentialClientApplication(
             AAD_CLIENT_ID,
             authority=f"https://login.microsoftonline.com/{AAD_TENANT_ID}",
             client_credential=AAD_CLIENT_SECRET
         )
-        token_response = app.acquire_token_for_client(
-            scopes=["https://analysis.windows.net/powerbi/api/.default"]
-        )
+        token_response = app.acquire_token_for_client(scopes=["https://analysis.windows.net/powerbi/api/.default"])
         if "access_token" in token_response:
             return token_response["access_token"], None
         else:
@@ -61,124 +44,33 @@ def get_powerbi_access_token():
     except Exception as e:
         return None, f"Failed to get Power BI token: {str(e)}"
 
-
 def get_embed_token_for_report():
     access_token, err = get_powerbi_access_token()
     if err:
         return None, None, err
-    
     if not all([POWERBI_WORKSPACE_ID, POWERBI_REPORT_ID]):
-        return None, None, "Missing POWERBI_WORKSPACE_ID or POWERBI_REPORT_ID in .env"
+        return None, None, "Missing POWERBI_WORKSPACE_ID or POWERBI_REPORT_ID"
     
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     
     try:
         report_url = f"https://api.powerbi.com/v1.0/myorg/groups/{POWERBI_WORKSPACE_ID}/reports/{POWERBI_REPORT_ID}"
-        resp = session.get(report_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-        
-        if resp.status_code == 401:
-            return None, None, "401 Unauthorized. Check service principal permissions."
-        elif resp.status_code == 403:
-            return None, None, "403 Forbidden. Service principal needs workspace access."
-        elif resp.status_code == 404:
-            return None, None, f"404 Report not found.\n- Workspace ID: {POWERBI_WORKSPACE_ID}\n- Report ID: {POWERBI_REPORT_ID}"
-        
-        resp.raise_for_status()
-        report_info = resp.json()
-        embed_url = report_info.get("embedUrl")
+        resp = requests.get(report_url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            return None, None, f"Error {resp.status_code}"
+        embed_url = resp.json().get("embedUrl")
         
         token_url = f"{report_url}/GenerateToken"
-        token_body = {"accessLevel": "View"}
-        resp = session.post(token_url, headers=headers, json=token_body, timeout=DEFAULT_TIMEOUT)
-        
-        if resp.status_code == 401:
-            return None, None, "401 on GenerateToken. Service principal lacks permission to generate tokens."
-        elif resp.status_code == 403:
-            return None, None, "403 on GenerateToken. Check tenant settings and workspace permissions."
-        
+        resp = requests.post(token_url, headers=headers, json={"accessLevel": "View"}, timeout=30)
         resp.raise_for_status()
-        token_info = resp.json()
-        embed_token = token_info.get("token")
+        embed_token = resp.json().get("token")
         
         return embed_url, embed_token, None
-    except requests.exceptions.RequestException as e:
-        return None, None, f"Power BI API error: {str(e)}"
     except Exception as e:
-        return None, None, f"Error generating embed token: {str(e)}"
-
-
-def get_powerbi_dataset_summary():
-    access_token, err = get_powerbi_access_token()
-    if err:
-        return None, err
-    
-    if not all([POWERBI_WORKSPACE_ID, POWERBI_DATASET_ID]):
-        return None, "Missing Power BI configuration"
-    
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        url = f"https://api.powerbi.com/v1.0/myorg/groups/{POWERBI_WORKSPACE_ID}/datasets/{POWERBI_DATASET_ID}"
-        resp = session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-        
-        if resp.status_code in [401, 403, 404]:
-            return None, f"Dataset API error {resp.status_code}"
-        
-        resp.raise_for_status()
-        dataset_info = resp.json()
-        
-        tables = []
-        tables_url = f"{url}/tables"
-        resp = session.get(tables_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-        if resp.status_code == 200:
-            tables = [t["name"] for t in resp.json().get("value", [])]
-        
-        summary = f"""Power BI Dataset: {dataset_info.get('name', 'Unknown')}
-Tables: {', '.join(tables) if tables else 'Schema not accessible'}
-
-Note: This is an airline flight dataset containing information about flights, cancellations, delays, and related metrics."""
-        return summary, None
-    except Exception as e:
-        return None, f"Error fetching dataset: {str(e)}"
-
-
-def extract_text_from_report_image(image):
-    try:
-        reader = easyocr.Reader(['en'], gpu=False)
-        if isinstance(image, Image.Image):
-            image_array = np.array(image)
-        else:
-            image_array = np.array(Image.open(io.BytesIO(image)))
-        results = reader.readtext(image_array)
-        extracted_text = "\n".join([text[1] for text in results if text[2] > 0.3])
-        return extracted_text, None
-    except Exception as e:
-        return None, f"OCR failed: {str(e)}"
-
-
-def capture_screen_ocr():
-    try:
-        screenshot = pyautogui.screenshot()
-        return extract_text_from_report_image(screenshot)
-    except Exception as e:
-        return None, f"Capture failed: {str(e)}"
-
-
-def get_dataset_context_with_data():
-    summary, err = get_powerbi_dataset_summary()
-    if err:
-        return None, err
-    return summary, None
-
+        return None, None, f"Error: {str(e)}"
 
 def render_powerbi_embed(embed_url, embed_token, report_id):
-    html = f"""
+    return f"""
     <div id="reportContainer" style="width:100%; height:600px;"></div>
     <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.22.3/dist/powerbi.min.js"></script>
     <script>
@@ -189,114 +81,156 @@ def render_powerbi_embed(embed_url, embed_token, report_id):
             embedUrl: '{embed_url}',
             accessToken: '{embed_token}',
             tokenType: models.TokenType.Embed,
-            settings: {{
-                panes: {{
-                    filters: {{ visible: false }},
-                    pageNavigation: {{ visible: true }}
-                }}
-            }}
+            settings: {{panes: {{filters: {{visible: false}}, pageNavigation: {{visible: true}}}}}}
         }};
         var reportContainer = document.getElementById('reportContainer');
         var report = powerbi.embed(reportContainer, embedConfiguration);
     </script>
     """
-    return html
 
-
+# Streamlit UI
 st.set_page_config(layout="wide", page_title="Power BI Insights", initial_sidebar_state="expanded")
-
-if "ocr_data" not in st.session_state:
-    st.session_state.ocr_data = None
 
 missing_config = []
 if not all([AAD_TENANT_ID, AAD_CLIENT_ID, AAD_CLIENT_SECRET]):
-    missing_config.append("Azure AD (AAD_TENANT_ID, AAD_CLIENT_ID, AAD_CLIENT_SECRET)")
+    missing_config.append("Azure AD credentials")
 if not all([POWERBI_WORKSPACE_ID, POWERBI_REPORT_ID]):
-    missing_config.append("Power BI (POWERBI_WORKSPACE_ID, POWERBI_REPORT_ID)")
+    missing_config.append("Power BI IDs")
 
 if missing_config:
-    st.error(f"⚠️ Missing configuration: {', '.join(missing_config)}")
-    st.markdown("Please check your `.env` file.")
+    st.error(f"Missing: {', '.join(missing_config)}")
     st.stop()
 
 left, right = st.columns([3, 1])
 
 with left:
     st.markdown("### Power BI Report")
-    
     embed_url, embed_token, err = get_embed_token_for_report()
-    
     if err:
         st.error(err)
     else:
-        embed_html = render_powerbi_embed(embed_url, embed_token, POWERBI_REPORT_ID)
-        st.components.v1.html(embed_html, height=620)
-        st.session_state.embed_url = embed_url
-        st.session_state.embed_token = embed_token
+        st.components.v1.html(render_powerbi_embed(embed_url, embed_token, POWERBI_REPORT_ID), height=620)
 
 @st.fragment
 def insights_panel():
-    st.header("Prompt:")
-    prompt = st.text_area("Enter your prompt here", height=100, label_visibility="collapsed", key="prompt_box")
-    generate_btn = st.button("Generate Insights")
+    st.header("Ask Questions:")
+    prompt = st.text_area(
+        "Enter your question about the data:", 
+        height=100,
+        placeholder="e.g., What's the delay breakdown? Which month has lowest cancellations?",
+        key="prompt_box"
+    )
+    generate_btn = st.button("Generate Insights", use_container_width=True)
     
     st.markdown("### Insights:")
-
+    
     if generate_btn and prompt:
-        with st.spinner("🔍 Capturing screen & generating insights..."):
+        with st.spinner("Agent analyzing..."):
             try:
-                ocr_data, ocr_err = capture_screen_ocr()
-                if ocr_err:
-                    st.warning(f"OCR: {ocr_err}")
+                from langchain_core.messages import HumanMessage, SystemMessage
                 
-                report_text, err = get_dataset_context_with_data()
-
+                # Construct messages with system prompt
                 messages = [
-                    {"role": "system", "content": """You are analyzing a Power BI airline flight dashboard. The OCR data contains text extracted from the screen.
-
-DASHBOARD COMPONENTS:
-1.  Cards (top section):
-   - Total Flights (e.g., "6M" = 6 million flights)
-   - Avg Delay (in minutes)
-   - Cancellation Rate (percentage)
-
-2. Delay Breakdown (donut/pie chart):
-   - Shows delay types: Air System Delays, Airline Delays, Late Aircraft Delays, Security Delays, Weather Delays
-   - Values shown as "X.XXM (XX.XX%)" format
-
-3. Cancellations Over Time (bar chart):
-   - X-axis: Months (January through December)
-   - Y-axis: Sum of Cancelled flights (in thousands, "K")
-   - Shows monthly cancellation trends
-
-INTERPRETING VALUES:
-- "M" = millions, "K" = thousands
-- Percentages in parentheses show proportion of total
-- Bar heights indicate relative values across months
-
-When answering questions:
-- Reference specific chart data when relevant
-- For trends, describe patterns (increasing, decreasing, peaks, etc.)
-- Identify which month has highest/lowest values when asked
-- Give direct, specific answers using exact numbers from the dashboard
-- Ignore browser UI text and noise in the OCR data."""}
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=prompt)
                 ]
-                if report_text:
-                    messages.append({"role": "system", "content": f"Dataset Context:\n{report_text}"})
-                if ocr_data:
-                    messages.append({"role": "system", "content": f"Extracted Data:\n{ocr_data}"})
-                messages.append({"role": "user", "content": prompt})
-
-                response = client.chat.completions.create(
-                    model=deployment_name,
-                    messages=messages,
-                    max_tokens=300
-                )
-                summary = response.choices[0].message.content.strip()
-                st.success("Generated successfully!")
-                st.write(summary)
+                
+                # Invoke agent
+                response = agent_executor.invoke({"messages": messages})
+                
+                # Extract the final response - handle different response formats
+                if response and "messages" in response:
+                    final_message = response["messages"][-1]
+                    
+                    # Check if it's an AIMessage object or dict
+                    if hasattr(final_message, 'content'):
+                        # It's a LangChain message object
+                        output = final_message.content
+                    elif isinstance(final_message, dict) and 'content' in final_message:
+                        # It's a dictionary
+                        output = final_message['content']
+                    else:
+                        output = str(final_message)
+                else:
+                    output = str(response)
+                
+                # Extract DAX queries from the conversation
+                dax_queries = []
+                for msg in response.get("messages", []):
+                    msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                    if isinstance(msg_content, str) and "EVALUATE" in msg_content:
+                        # Try to extract DAX query
+                        lines = msg_content.split('\n')
+                        query_lines = []
+                        in_query = False
+                        for line in lines:
+                            if 'EVALUATE' in line:
+                                in_query = True
+                            if in_query:
+                                query_lines.append(line)
+                                # Stop at empty line or next sentence
+                                if line.strip() == '' and len(query_lines) > 1:
+                                    break
+                        if query_lines:
+                            dax_queries.append('\n'.join(query_lines).strip())
+                
+                # Display DAX Query if found
+                if dax_queries:
+                    st.markdown("#### 📊 DAX Query")
+                    for i, query in enumerate(dax_queries, 1):
+                        with st.expander(f"Query {i}", expanded=(i==len(dax_queries))):
+                            st.code(query, language="sql")
+                
+                # Display result with better formatting
+                st.markdown("#### 💡 Analysis")
+                
+                # Try to format the output nicely
+                if "delay" in output.lower() or "total" in output.lower():
+                    # Format numbers with commas
+                    import re
+                    formatted_output = output
+                    # Find large numbers and format them
+                    numbers = re.findall(r'\b\d{4,}\b', output)
+                    for num in numbers:
+                        formatted_num = f"{int(num):,}"
+                        formatted_output = formatted_output.replace(num, f"**{formatted_num}**")
+                    st.markdown(formatted_output)
+                else:
+                    st.write(output)
+                
+                # Show agent steps in expander
+                with st.expander("🔍 Agent Reasoning", expanded=False):
+                    # Format the messages for display
+                    for i, msg in enumerate(response.get("messages", [])):
+                        msg_type = type(msg).__name__
+                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                        
+                        if msg_type == "HumanMessage":
+                            st.markdown(f"**👤 User:** {msg_content}")
+                        elif msg_type == "AIMessage":
+                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                st.markdown(f"**🤖 Agent Decision:** Using tools")
+                                for tool_call in msg.tool_calls:
+                                    st.markdown(f"- 🔧 `{tool_call.get('name', 'unknown')}`")
+                            else:
+                                st.markdown(f"**🤖 Agent Response:**")
+                                st.text(msg_content[:500] + "..." if len(str(msg_content)) > 500 else msg_content)
+                        elif msg_type == "ToolMessage":
+                            tool_name = getattr(msg, 'name', 'unknown')
+                            st.markdown(f"**⚙️ Tool Result ({tool_name}):**")
+                            st.text(str(msg_content)[:300] + "..." if len(str(msg_content)) > 300 else str(msg_content))
+                        
+                        if i < len(response.get("messages", [])) - 1:
+                            st.divider()
+                    
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+                st.info("Try rephrasing your question or ask something simpler.")
+                
+                # Show full error details in expander
+                with st.expander("Error Details"):
+                    import traceback
+                    st.code(traceback.format_exc())
 
 with right:
     insights_panel()

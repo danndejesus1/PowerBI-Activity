@@ -1,0 +1,201 @@
+# DAX Query Syntax Documentation
+
+EVALUATE <table_expression>
+
+The EVALUATE statement is required to return a table in DAX. Every query must start with EVALUATE.
+
+Examples:
+EVALUATE 'Sales'
+EVALUATE ROW("Total", SUM('Sales'[Amount]))
+
+---
+
+## ADDCOLUMNS
+ADDCOLUMNS(<table>, <name>, <expression>[, <name>, <expression>]...)
+
+Adds calculated columns to the given table or table expression.
+Use with VALUES() to group data and CALCULATE() for aggregations.
+
+Examples:
+EVALUATE
+ADDCOLUMNS(
+    VALUES('Sales'[Region]),
+    "Total Sales", CALCULATE(SUM('Sales'[Amount])),
+    "Avg Sales", CALCULATE(AVERAGE('Sales'[Amount]))
+)
+
+Common Usage:
+For grouping data, use ADDCOLUMNS with VALUES and CALCULATE.
+
+---
+
+## VALUES
+VALUES(<TableNameOrColumnName>)
+
+Returns a one-column table with distinct values from the specified column.
+Commonly used with ADDCOLUMNS for grouping.
+
+Example:
+VALUES('Products'[Category])
+
+---
+
+## CALCULATE
+CALCULATE(<expression>[, <filter1>, <filter2>...])
+
+Evaluates an expression in a modified filter context.
+Essential when adding calculated columns with ADDCOLUMNS.
+
+Examples:
+CALCULATE(SUM('Sales'[Amount]))
+CALCULATE(SUM('Sales'[Amount]), 'Products'[Category] = "Electronics")
+
+---
+
+## TOPN
+TOPN(<n_value>, <table>, <orderBy_expression>, [<order>])
+
+Returns the top N rows of the specified table sorted by orderBy_expression.
+Order can be ASC (ascending) or DESC (descending, default).
+
+Example:
+EVALUATE
+TOPN(10,
+    ADDCOLUMNS(
+        VALUES('Sales'[Product]),
+        "Total", CALCULATE(SUM('Sales'[Amount]))
+    ),
+    [Total], DESC
+)
+
+---
+
+## UNION
+UNION(<table_expression1>, <table_expression2>[, <table_expression>]...)
+
+Creates a union (concatenation) of two or more tables.
+Useful for comparing metrics from different columns as categories.
+
+Example - Delay Breakdown Pattern:
+EVALUATE
+UNION(
+    ROW("Type", "Air System Delays", "Total", SUM('flights'[AIR_SYSTEM_DELAY])),
+    ROW("Type", "Airline Delays", "Total", SUM('flights'[AIRLINE_DELAY])),
+    ROW("Type", "Late Aircraft Delays", "Total", SUM('flights'[LATE_AIRCRAFT_DELAY])),
+    ROW("Type", "Security Delays", "Total", SUM('flights'[SECURITY_DELAY])),
+    ROW("Type", "Weather Delays", "Total", SUM('flights'[WEATHER_DELAY]))
+)
+ORDER BY [Total] DESC
+
+---
+
+## ROW
+ROW(<name>, <expression>[, <name>, <expression>]...)
+
+Returns a table with a single row containing the specified name-value pairs.
+
+Examples:
+EVALUATE ROW("Total Sales", SUM('Sales'[Amount]))
+EVALUATE ROW("Total Sales", SUM('Sales'[Amount]), "Avg Price", AVERAGE('Sales'[Price]))
+
+---
+
+## SUM
+SUM(<column>)
+
+Adds all the numbers in a column.
+
+Example:
+SUM('Sales'[Amount])
+
+Usage: Use SUM for delay totals, cancellation counts, revenue, etc.
+
+---
+
+## COUNTROWS
+COUNTROWS([<table>])
+
+Counts the number of rows in the specified table or table expression.
+
+Examples:
+COUNTROWS('Sales')
+COUNTROWS(FILTER('Sales', 'Sales'[Amount] > 1000))
+
+Usage: Use for counting records, not for summing values.
+
+---
+
+## FILTER
+FILTER(<table>, <filter_expression>)
+
+Returns a table that represents a subset of another table.
+
+Examples:
+FILTER('Sales', 'Sales'[Amount] > 1000)
+FILTER('Sales', 'Sales'[Region] = "West")
+
+---
+
+## ORDER BY
+ORDER BY <column> [ASC | DESC][, <column> [ASC | DESC]]...
+
+Sorts query results. Can be used after EVALUATE.
+
+Example:
+EVALUATE
+ADDCOLUMNS(VALUES('Sales'[Product]), "Total", CALCULATE(SUM('Sales'[Amount])))
+ORDER BY [Total] DESC
+
+---
+
+## IMPORTANT PATTERNS
+
+### Count Total Records
+EVALUATE ROW("Total", COUNTROWS('table'))
+
+### Group and Count
+EVALUATE
+ADDCOLUMNS(
+    VALUES('table'[column]),
+    "Count", CALCULATE(COUNTROWS('table'))
+)
+ORDER BY [Count] DESC
+
+### Group and Sum
+EVALUATE
+ADDCOLUMNS(
+    VALUES('table'[column]),
+    "Total", CALCULATE(SUM('table'[value_column]))
+)
+ORDER BY [Total] DESC
+
+### Compare Multiple Columns as Categories (Delay Breakdown)
+EVALUATE
+UNION(
+    ROW("Category", "Name1", "Value", SUM('table'[column1])),
+    ROW("Category", "Name2", "Value", SUM('table'[column2]))
+)
+ORDER BY [Value] DESC
+
+### Top N Results
+EVALUATE
+TOPN(10,
+    ADDCOLUMNS(
+        VALUES('table'[column]),
+        "Metric", CALCULATE(SUM('table'[value]))
+    ),
+    [Metric], DESC
+)
+
+---
+
+## CRITICAL RULES
+
+1. Always start with EVALUATE
+2. Use 'table' for table names (single quotes)
+3. Use 'table'[column] for column references (brackets)
+4. For delays/cancellations: use SUM() not COUNTROWS()
+5. For grouping: use ADDCOLUMNS + VALUES + CALCULATE
+6. NEVER use SUMMARIZE with aggregations (deprecated pattern)
+7. Match column names EXACTLY as they appear in the schema
+8. Use ASC for lowest, DESC for highest

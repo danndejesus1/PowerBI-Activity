@@ -6,3 +6,7 @@ openai
 msal>=1.24
 pandas
 openpyxl
+langchain
+langchain-openai
+langchain-core
+langgraph
