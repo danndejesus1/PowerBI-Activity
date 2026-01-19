@@ -8,9 +8,16 @@ import json
 import hashlib
 import time
 from datetime import datetime
-from streamlit_javascript import st_javascript
-from urllib.parse import parse_qs, quote, unquote
 import base64
+
+# Try to import streamlit_javascript for reading localStorage
+try:
+    from streamlit_javascript import st_javascript
+    HAS_ST_JS = True
+except ImportError:
+    HAS_ST_JS = False
+    def st_javascript(code):
+        return None
 
 # Import agent setup from separate module
 from dax_agent import create_dax_agent
@@ -323,16 +330,26 @@ def format_filter_summary(context):
     return "\n".join(summary_parts) if summary_parts else "Filters applied (details unavailable)"
 
 def generate_auto_insight_prompt(context):
-    """Generate contextual prompt for auto-insights"""
-    # Get actual filter values
-    airline = context.get('airline', 'All')
-    month = context.get('month', 'All')
+    """Generate contextual prompt for auto-insights using SYNCED filters"""
+    # Get filters from the synced context
+    filters = context.get('filters', {}) if context else {}
     
     filter_parts = []
-    if airline != "All":
-        filter_parts.append(f"Airline: {airline}")
-    if month != "All":
-        filter_parts.append(f"Month: {month}")
+    for col_name, filter_data in filters.items():
+        values = filter_data.get('values', [])
+        if values:
+            # Format dates nicely
+            display_vals = []
+            for v in values[:3]:
+                if isinstance(v, str) and 'T' in v:
+                    try:
+                        dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                        display_vals.append(dt.strftime('%Y-%m-%d'))
+                    except:
+                        display_vals.append(str(v))
+                else:
+                    display_vals.append(str(v))
+            filter_parts.append(f"{col_name}: {' to '.join(display_vals)}")
     
     filters_summary = "\n".join(filter_parts) if filter_parts else "No filters (showing all data)"
     
@@ -351,20 +368,42 @@ Be specific with numbers. Keep it concise."""
     return prompt
 
 def get_auto_insights_from_agent(prompt, context):
-    """Get FAST insights using direct Azure OpenAI call with FILTERED stats"""
+    """Get FAST insights using direct Azure OpenAI call with FILTERED stats from synced context"""
     try:
         from dax_agent import execute_dax_query
         
-        # Get current filter selections
-        airline_filter = st.session_state.get('selected_airline', 'All')
-        month_filter = st.session_state.get('selected_month', 'All')
+        # Get filters from the synced context (from Power BI)
+        filters = context.get('filters', {}) if context else {}
         
-        # Build filter clause for DAX
+        # Build filter clause for DAX based on synced filters
         filter_conditions = []
-        if airline_filter != "All":
-            filter_conditions.append(f"'flights'[AIRLINE] = \"{airline_filter}\"")
-        if month_filter != "All":
-            filter_conditions.append(f"'flights'[MONTH] = {month_filter}")
+        filter_desc = []
+        
+        for col_name, filter_data in filters.items():
+            table = filter_data.get('table', 'flights')
+            values = filter_data.get('values', [])
+            
+            if values and len(values) > 0:
+                # Handle date range filters
+                if col_name.upper() == 'DATE' and len(values) >= 2:
+                    # Date range filter
+                    start_date = values[0][:10] if isinstance(values[0], str) else str(values[0])
+                    end_date = values[1][:10] if isinstance(values[1], str) else str(values[1])
+                    filter_conditions.append(f"'{table}'[{col_name}] >= DATE({start_date[:4]}, {int(start_date[5:7])}, {int(start_date[8:10])}) && '{table}'[{col_name}] <= DATE({end_date[:4]}, {int(end_date[5:7])}, {int(end_date[8:10])})")
+                    filter_desc.append(f"{col_name}: {start_date} to {end_date}")
+                elif len(values) == 1:
+                    # Single value filter
+                    val = values[0]
+                    if isinstance(val, str):
+                        filter_conditions.append(f"'{table}'[{col_name}] = \"{val}\"")
+                    else:
+                        filter_conditions.append(f"'{table}'[{col_name}] = {val}")
+                    filter_desc.append(f"{col_name}: {val}")
+                else:
+                    # Multiple values - use IN
+                    vals_str = ', '.join([f'"{v}"' if isinstance(v, str) else str(v) for v in values])
+                    filter_conditions.append(f"'{table}'[{col_name}] IN {{{vals_str}}}")
+                    filter_desc.append(f"{col_name}: {', '.join(map(str, values[:3]))}")
         
         # Create filtered table expression
         if filter_conditions:
@@ -415,12 +454,7 @@ def get_auto_insights_from_agent(prompt, context):
             except:
                 pass
         
-        # Build filter description
-        filter_desc = []
-        if airline_filter != "All":
-            filter_desc.append(f"Airline: {airline_filter}")
-        if month_filter != "All":
-            filter_desc.append(f"Month: {month_filter}")
+        # Build filter description text
         filter_text = ", ".join(filter_desc) if filter_desc else "No filters (full dataset)"
         
         # Build stats summary
@@ -488,8 +522,7 @@ with left:
     else:
         # Create a combined HTML that stores filters in parent window's sessionStorage
         combined_html = f"""
-        <div id="reportContainer" style="width:100%; height:580px;"></div>
-        <div id="filterIndicator" style="padding: 5px 10px; background: #f0f2f6; font-size: 12px; color: #666; border-top: 1px solid #ddd;">Loading filters...</div>
+        <div id="reportContainer" style="width:100%; height:600px;"></div>
         <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.22.3/dist/powerbi.min.js"></script>
         <script>
             console.log('[PowerBI Embed] Initializing...');
@@ -514,6 +547,7 @@ with left:
             var report = powerbi.embed(reportContainer, embedConfiguration);
             
             var lastFilterState = '{{}}';
+            var currentFiltersJson = '{{}}';
             
             function parseFilters(filters) {{
                 var parsedFilters = {{}};
@@ -582,36 +616,13 @@ with left:
             }}
             
             function storeFilters(parsedFilters) {{
+                currentFiltersJson = JSON.stringify(parsedFilters);
+                // Store in localStorage for Streamlit to read
                 try {{
-                    var filterJson = JSON.stringify(parsedFilters);
-                    // Store in parent window's sessionStorage (shared with Streamlit)
-                    window.parent.sessionStorage.setItem('powerbi_filters', filterJson);
-                    window.parent.sessionStorage.setItem('powerbi_filters_ts', Date.now().toString());
-                    
-                    // Also store in own storage for reader component
-                    sessionStorage.setItem('powerbi_filters', filterJson);
-                    localStorage.setItem('powerbi_filters', filterJson);
-                    
-                    // Log clearly for easy copying
-                    console.log('[PowerBI Embed] ========== CURRENT FILTERS ==========');
-                    console.log('[PowerBI Embed] Copy this JSON:', filterJson);
-                    console.log('[PowerBI Embed] =====================================');
-                    
-                    // Update visible indicator if exists
-                    var indicator = document.getElementById('filterIndicator');
-                    if (indicator) {{
-                        var count = Object.keys(parsedFilters).length;
-                        if (count > 0) {{
-                            indicator.innerHTML = '🎯 ' + count + ' filter(s) active';
-                            indicator.style.color = 'green';
-                        }} else {{
-                            indicator.innerHTML = 'No filters';
-                            indicator.style.color = '#666';
-                        }}
-                    }}
-                }} catch (e) {{
-                    console.log('[PowerBI Embed] Storage error:', e);
-                }}
+                    localStorage.setItem('pbi_filters', currentFiltersJson);
+                    localStorage.setItem('pbi_filters_ts', Date.now().toString());
+                }} catch(e) {{}}
+                console.log('[PowerBI] Current filters:', currentFiltersJson);
             }}
             
             report.on('loaded', async function() {{
@@ -622,10 +633,9 @@ with left:
             }});
             
             report.on('rendered', async function() {{
-                console.log('[PowerBI Embed] Report rendered');
                 var allFilters = await getAllFilters();
                 storeFilters(allFilters);
-            }});
+            }});    
             
             report.on('filtersApplied', async function() {{
                 console.log('[PowerBI Embed] Filters applied');
@@ -635,9 +645,6 @@ with left:
             }});
             
             report.on('dataSelected', async function(event) {{
-                console.log('[PowerBI Embed] Data selected:', event.detail);
-                
-                // Extract selection from dataPoints
                 if (event.detail && event.detail.dataPoints && event.detail.dataPoints.length > 0) {{
                     var selectedData = {{}};
                     event.detail.dataPoints.forEach(function(dp) {{
@@ -666,7 +673,6 @@ with left:
                     }}
                 }}
                 
-                // Fallback
                 setTimeout(async function() {{
                     var allFilters = await getAllFilters();
                     storeFilters(allFilters);
@@ -688,92 +694,13 @@ with left:
         """
         
         st.components.v1.html(combined_html, height=620)
-        
-        # Display current filters stored (read via a simple approach)
-        st.caption("🔍 Filters sync automatically when changed in Power BI")
 
 # Global variable to store filters (set by the reader component)
 if 'detected_filters' not in st.session_state:
     st.session_state.detected_filters = {}
 
-def create_filter_reader_component():
-    """Create a component that reads filters and updates URL params for Python to read"""
-    reader_html = """
-    <div id="filterReader" style="padding: 10px; background: #e8f4e8; border-radius: 5px; font-family: sans-serif; border: 1px solid #4CAF50;">
-        <div id="filterStatus" style="color: #333; font-size: 13px; font-weight: 500;">🔍 Reading filters...</div>
-        <button id="applyBtn" onclick="applyFilters()" style="margin-top: 8px; padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; display: none;">
-            ✅ Apply These Filters
-        </button>
-    </div>
-    <script>
-        var currentFilters = '{}';
-        
-        function readFilters() {
-            try {
-                var filters = window.parent.sessionStorage.getItem('powerbi_filters');
-                
-                if (filters && filters !== '{}' && filters !== 'null') {
-                    currentFilters = filters;
-                    var parsed = JSON.parse(filters);
-                    var filterCount = Object.keys(parsed).length;
-                    
-                    if (filterCount > 0) {
-                        var summary = [];
-                        for (var key in parsed) {
-                            var vals = parsed[key].values || [];
-                            // Format dates nicely
-                            var displayVals = vals.slice(0, 2).map(function(v) {
-                                if (typeof v === 'string' && v.includes('T')) {
-                                    return new Date(v).toLocaleDateString();
-                                }
-                                return v;
-                            });
-                            summary.push('<b>' + key + '</b>: ' + displayVals.join(' - '));
-                        }
-                        document.getElementById('filterStatus').innerHTML = '✅ <b>' + filterCount + ' filter(s) detected:</b><br>' + summary.join('<br>');
-                        document.getElementById('applyBtn').style.display = 'block';
-                    } else {
-                        document.getElementById('filterStatus').innerHTML = '📊 No filters - will analyze full dataset';
-                        document.getElementById('applyBtn').style.display = 'block';
-                        document.getElementById('applyBtn').innerText = '🚀 Analyze Full Dataset';
-                    }
-                } else {
-                    document.getElementById('filterStatus').innerHTML = '⏳ Waiting for Power BI filters...';
-                    document.getElementById('applyBtn').style.display = 'none';
-                }
-            } catch (e) {
-                console.error('[FilterReader] Error:', e);
-            }
-        }
-        
-        function applyFilters() {
-            try {
-                // Encode filters as base64 to avoid URL encoding issues
-                var encoded = btoa(currentFilters);
-                
-                // Update URL with filters parameter
-                var url = new URL(window.top.location.href);
-                url.searchParams.set('pbi_filters', encoded);
-                url.searchParams.set('pbi_ts', Date.now().toString());
-                
-                // Navigate to trigger Streamlit refresh with new params
-                window.top.location.href = url.toString();
-            } catch (e) {
-                console.error('[FilterReader] Apply error:', e);
-                alert('Error applying filters. Please try the manual input method.');
-            }
-        }
-        
-        // Read immediately and every 2 seconds
-        readFilters();
-        setInterval(readFilters, 2000);
-    </script>
-    """
-    return reader_html
-
-
 def get_filters_from_url():
-    """Read filters from URL query parameters"""
+    """Read filters from URL query parameters (set by Power BI embed sync button)"""
     try:
         params = st.query_params
         if 'pbi_filters' in params:
@@ -784,91 +711,73 @@ def get_filters_from_url():
         pass
     return {}
 
+def read_filters_from_localstorage():
+    """Read Power BI filters from localStorage using st_javascript"""
+    if not HAS_ST_JS:
+        return None
+    try:
+        result = st_javascript("localStorage.getItem('pbi_filters')")
+        if result and result != '{}' and result != 'null' and result not in [0, '0', None]:
+            return json.loads(result)
+    except Exception:
+        pass
+    return None
+
 # ============================================================================
 # Auto-Insights Panel (Right Sidebar)
 # ============================================================================
 
-def get_powerbi_filters_via_js():
-    """Read filters from parent window's sessionStorage (set by Power BI iframe)"""
-    js_code = """
-    (function() {
-        try {
-            // Power BI iframe stores in parent's sessionStorage
-            // We need to access window.parent.sessionStorage (or top)
-            var storage = null;
-            
-            // Try parent window first
-            try {
-                storage = window.parent.sessionStorage;
-            } catch (e) {
-                // If blocked, try top
-                try {
-                    storage = window.top.sessionStorage;
-                } catch (e2) {
-                    // Fall back to own sessionStorage
-                    storage = sessionStorage;
-                }
-            }
-            
-            var filters = storage.getItem('powerbi_filters');
-            console.log('[GetFilters] Raw value from storage:', filters);
-            
-            if (filters && filters !== '{}' && filters !== 'null' && filters !== null) {
-                console.log('[GetFilters] Found filters:', filters);
-                return filters;
-            }
-            
-            console.log('[GetFilters] No filters found in any storage');
-            return '{}';
-        } catch (e) {
-            console.error('[GetFilters] Error:', e.message);
-            return '{}';
-        }
-    })()
-    """
-    try:
-        result = st_javascript(js_code)
-        st.write(f"DEBUG: Raw JS result = {result}")  # Temporary debug
-        if result and result != '{}' and result != 0 and result != '0':
-            parsed = json.loads(result)
-            if parsed and len(parsed) > 0:
-                return parsed
-    except Exception as e:
-        st.write(f"DEBUG: Exception = {e}")  # Temporary debug
-        pass
-    return {}
-
+@st.fragment
 def auto_insights_panel():
     st.markdown("### 📊 Auto Insights")
     
-    # Check for filters from URL (set by the filter reader component)
+    # Initialize generation counter
+    if 'gen_counter' not in st.session_state:
+        st.session_state.gen_counter = 0
+    
+    # ALWAYS try to read localStorage (st_javascript is async, needs multiple runs)
+    if HAS_ST_JS:
+        ls_result = read_filters_from_localstorage()
+        if ls_result and len(ls_result) > 0:
+            # Store the latest filters we've seen from localStorage
+            st.session_state.cached_pbi_filters = ls_result
+    
+    # Sync button uses the cached filters
+    if st.session_state.get('trigger_sync', False):
+        st.session_state.trigger_sync = False
+        cached_filters = st.session_state.get('cached_pbi_filters', {})
+        if cached_filters and len(cached_filters) > 0:
+            st.session_state.filter_context = {'filters': cached_filters}
+            st.session_state.gen_counter += 1  # Force new generation
+            st.toast(f"✅ Synced {len(cached_filters)} filter(s)!")
+        else:
+            st.toast("⏳ Filters not ready yet - try again in a moment")
+            # Don't reset to empty, keep trying
+    
+    # Also check URL params as fallback
     url_filters = get_filters_from_url()
     if url_filters and len(url_filters) > 0:
-        # We have filters from URL - store them and trigger regeneration
-        if st.session_state.get('last_url_filters') != url_filters:
+        stored_filters = (st.session_state.get('filter_context') or {}).get('filters', {})
+        if url_filters != stored_filters:
             st.session_state.filter_context = {'filters': url_filters}
-            st.session_state.last_url_filters = url_filters
-            st.session_state.force_regenerate = True
-            
-            # Extract specific filter values
-            for col_name, filter_data in url_filters.items():
-                values = filter_data.get('values', [])
-                if 'DATE' in col_name.upper() and len(values) >= 2:
-                    st.session_state.selected_date_range = values
+            st.session_state.gen_counter += 1
+    
+    # Auto-initialize context if not set (analyze full dataset on first load)
+    if st.session_state.get('filter_context') is None:
+        st.session_state.filter_context = {'filters': {}}
+        st.session_state.gen_counter += 1
     
     st.divider()
     
-    # Show the filter reader component
-    st.caption("📡 **Filter Detection:**")
-    reader_html = create_filter_reader_component()
-    st.components.v1.html(reader_html, height=100)
-    
-    st.divider()
+    # Show cached Power BI filters (what we can see from localStorage)
+    cached_pbi = st.session_state.get('cached_pbi_filters', {})
+    if cached_pbi and len(cached_pbi) > 0:
+        st.info(f"🔍 **Detected {len(cached_pbi)} Power BI filter(s)** - Click Sync to apply")
     
     # Show current filter status
-    current_filters = st.session_state.get('filter_context', {}).get('filters', {})
+    current_filters = (st.session_state.get('filter_context') or {}).get('filters', {})
     if current_filters and len(current_filters) > 0:
-        st.success(f"🎯 **Active: {len(current_filters)} filter(s)**")
+        st.success(f"🎯 **{len(current_filters)} filter(s) active**")
         for col_name, filter_data in current_filters.items():
             values = filter_data.get('values', [])
             # Format dates nicely
@@ -884,46 +793,52 @@ def auto_insights_panel():
                     display_vals.append(str(v))
             st.caption(f"• **{col_name}**: {' to '.join(display_vals)}")
     else:
-        st.info("📊 No filters - will analyze full dataset")
+        st.caption("📊 Analyzing full dataset")
     
-    # Manual override option
-    with st.expander("⚙️ Manual Filter Override", expanded=False):
-        manual_json = st.text_area(
-            "Paste filter JSON (from console):",
-            height=80,
-            key="manual_json_input"
-        )
-        if st.button("Apply Manual Filters", key="apply_manual_btn"):
-            try:
-                parsed = json.loads(manual_json) if manual_json else {}
-                st.session_state.filter_context = {'filters': parsed}
-                st.session_state.force_regenerate = True
-                st.success("✅ Manual filters applied!")
-                st.rerun()
-            except json.JSONDecodeError:
-                st.error("Invalid JSON format")
+    # Sync and Refresh buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Sync Filters", use_container_width=True, type="primary", 
+                     help="Read current filters from Power BI"):
+            st.session_state.trigger_sync = True
+            st.rerun()
+    with col2:
+        if st.button("✨ Regenerate", use_container_width=True, type="secondary"):
+            st.session_state.gen_counter += 1
+            st.session_state.pop('last_gen_counter', None)  # Clear to force regeneration
+            st.rerun()
     
     st.divider()
-    
-    # Main insights container
+
+    # Main insights container - AUTO GENERATE
     with st.container(border=True):
         st.markdown("#### 💡 Current Insights")
         
-        # Check if we should generate insights
         current_context = st.session_state.get('filter_context')
-        cache = st.session_state.insights_cache
-        force_regen = st.session_state.get('force_regenerate', False)
+        current_gen = st.session_state.get('gen_counter', 0)
+        last_gen = st.session_state.get('last_gen_counter', -1)
         
-        # Generate insights when we have context
-        if force_regen and current_context:
+        # Check if we need to regenerate (counter changed)
+        need_regenerate = (current_gen != last_gen)
+        
+        # Get cached insights for display
+        cached_insights = st.session_state.get('current_insights')
+        
+        if current_context and need_regenerate:
+            # Generate new insights
             with st.spinner("🤖 Generating insights..."):
                 try:
                     prompt = generate_auto_insight_prompt(current_context)
                     insights = get_auto_insights_from_agent(prompt, current_context)
-                    cache.store(current_context, insights)
-                    st.session_state.force_regenerate = False
+                    
+                    # Store the new insights
+                    st.session_state.current_insights = insights
+                    st.session_state.last_gen_counter = current_gen
+                    st.session_state.last_gen_time = time.time()
                     
                     st.markdown(insights)
+                    
+                    # Add to history
                     st.session_state.insights_history.insert(0, {
                         'timestamp': time.time(),
                         'context': current_context,
@@ -932,31 +847,13 @@ def auto_insights_panel():
                     st.session_state.insights_history = st.session_state.insights_history[:10]
                 except Exception as e:
                     st.error(f"❌ {str(e)}")
-        elif current_context and not force_regen:
-            # Try to get cached insights
-            cached = cache.get_cached(current_context)
-            if cached:
-                st.markdown(cached['insights'])
-                st.caption(f"🕐 Generated at {time.strftime('%H:%M:%S', time.localtime(cached['timestamp']))}")
-            else:
-                # Generate new
-                with st.spinner("🤖 Analyzing..."):
-                    try:
-                        prompt = generate_auto_insight_prompt(current_context)
-                        insights = get_auto_insights_from_agent(prompt, current_context)
-                        cache.store(current_context, insights)
-                        
-                        st.markdown(insights)
-                        st.session_state.insights_history.insert(0, {
-                            'timestamp': time.time(),
-                            'context': current_context,
-                            'insights': insights
-                        })
-                        st.session_state.insights_history = st.session_state.insights_history[:10]
-                    except Exception as e:
-                        st.error(f"❌ {str(e)}")
+        elif cached_insights:
+            # Show existing insights
+            st.markdown(cached_insights)
+            gen_time = st.session_state.get('last_gen_time', time.time())
+            st.caption(f"🕐 Generated at {time.strftime('%H:%M:%S', time.localtime(gen_time))}")
         else:
-            st.info("👆 Click **Auto-Detect Filters** to read filters from Power BI and generate insights")
+            st.info("Click 'Sync Filters' to load Power BI filters, or 'Regenerate' for fresh insights.")
     
     st.divider()
     
@@ -969,11 +866,13 @@ def auto_insights_panel():
                 st.markdown(item['insights'])
                 if i < len(st.session_state.insights_history[:5]) - 1:
                     st.divider()
+
+
+@st.fragment
+def ask_question_panel():
+    """Separate panel for asking questions"""
+    st.markdown("### ❓ Ask a Question")
     
-    st.divider()
-    
-    # Manual questions
-    st.markdown("#### ❓ Ask a Question")
     with st.form("question_form"):
         question = st.text_area("Your question:", placeholder="e.g., What's the delay trend?", height=80)
         submitted = st.form_submit_button("Ask", use_container_width=True)
@@ -1004,3 +903,5 @@ def auto_insights_panel():
 
 with right:
     auto_insights_panel()
+    st.divider()
+    ask_question_panel()
