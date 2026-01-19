@@ -154,31 +154,28 @@ def insights_panel():
                 else:
                     output = str(response)
                 
-                # Extract DAX queries from the conversation
+                # Extract DAX queries from tool calls (the actual executed queries)
                 dax_queries = []
                 for msg in response.get("messages", []):
-                    msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                    if isinstance(msg_content, str) and "EVALUATE" in msg_content:
-                        # Try to extract DAX query
-                        lines = msg_content.split('\n')
-                        query_lines = []
-                        in_query = False
-                        for line in lines:
-                            if 'EVALUATE' in line:
-                                in_query = True
-                            if in_query:
-                                query_lines.append(line)
-                                # Stop at empty line or next sentence
-                                if line.strip() == '' and len(query_lines) > 1:
-                                    break
-                        if query_lines:
-                            dax_queries.append('\n'.join(query_lines).strip())
+                    # Check for ToolMessage with execute_dax_tool
+                    if hasattr(msg, 'name') and msg.name == 'execute_dax_tool':
+                        # This is a tool call message, get the query from previous AIMessage
+                        continue
+                    
+                    # Check for AIMessage with tool_calls
+                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        for tool_call in msg.tool_calls:
+                            if tool_call.get('name') == 'execute_dax_tool':
+                                # Extract the DAX query argument
+                                args = tool_call.get('args', {})
+                                if 'dax_query' in args:
+                                    dax_queries.append(args['dax_query'])
                 
                 # Display DAX Query if found
                 if dax_queries:
                     st.markdown("#### 📊 DAX Query")
                     for i, query in enumerate(dax_queries, 1):
-                        with st.expander(f"Query {i}", expanded=(i==len(dax_queries))):
+                        with st.expander(f"Query {i}", expanded=True):
                             st.code(query, language="sql")
                 
                 # Display result with better formatting
@@ -197,31 +194,6 @@ def insights_panel():
                     st.markdown(formatted_output)
                 else:
                     st.write(output)
-                
-                # Show agent steps in expander
-                with st.expander("🔍 Agent Reasoning", expanded=False):
-                    # Format the messages for display
-                    for i, msg in enumerate(response.get("messages", [])):
-                        msg_type = type(msg).__name__
-                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                        
-                        if msg_type == "HumanMessage":
-                            st.markdown(f"**👤 User:** {msg_content}")
-                        elif msg_type == "AIMessage":
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                                st.markdown(f"**🤖 Agent Decision:** Using tools")
-                                for tool_call in msg.tool_calls:
-                                    st.markdown(f"- 🔧 `{tool_call.get('name', 'unknown')}`")
-                            else:
-                                st.markdown(f"**🤖 Agent Response:**")
-                                st.text(msg_content[:500] + "..." if len(str(msg_content)) > 500 else msg_content)
-                        elif msg_type == "ToolMessage":
-                            tool_name = getattr(msg, 'name', 'unknown')
-                            st.markdown(f"**⚙️ Tool Result ({tool_name}):**")
-                            st.text(str(msg_content)[:300] + "..." if len(str(msg_content)) > 300 else str(msg_content))
-                        
-                        if i < len(response.get("messages", [])) - 1:
-                            st.divider()
                     
             except Exception as e:
                 st.error(f"Error: {str(e)}")
