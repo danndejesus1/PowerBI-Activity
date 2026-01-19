@@ -173,13 +173,13 @@ def insights_panel():
                 
                 # Display DAX Query if found
                 if dax_queries:
-                    st.markdown("#### 📊 DAX Query")
+                    st.markdown("#### DAX Query")
                     for i, query in enumerate(dax_queries, 1):
                         with st.expander(f"Query {i}", expanded=True):
                             st.code(query, language="sql")
                 
                 # Display result with better formatting
-                st.markdown("#### 💡 Analysis")
+                st.markdown("#### Analysis")
                 
                 # Try to format the output nicely
                 if "delay" in output.lower() or "total" in output.lower():
