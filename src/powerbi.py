@@ -301,7 +301,7 @@ The dashboard shows:
 - **Avg Delay Card**: Average departure delay in minutes
 - **Cancellation Rate Card**: Percentage of cancelled flights
 - **Delay Breakdown Pie Chart**: Distribution of delay minutes by type (Air System Delays, Airline Delays, Late Aircraft Delays, Security Delays, Weather Delays)
-- **Cancellations Over Time**: Monthly trend of cancellations showing seasonal patterns
+- **Cancellations Over Time**: Monthly trend of cancellations showing seasonal patterns — you MUST interpret cancellation trends over time (e.g., increasing/decreasing, seasonality, spikes, and likely causes) when producing the Disruption Assessment.
 
 Structure your response with exactly 4 numbered insights:
 
@@ -309,11 +309,11 @@ Structure your response with exactly 4 numbered insights:
 
 2. **Operational Insight** (2-3 sentences): Analyze the Delay Breakdown pie chart. Which delay type dominates? What percentage does it represent? What operational factors does this suggest (e.g., weather impact, airline operations, infrastructure)?
 
-3. **Disruption Assessment** (1-2 sentences): Evaluate the cancellation rate and its trend over time. Are there seasonal patterns? How does this compare to industry norms (typically 1-2%)?
+3. **Disruption Assessment** (1-2 sentences): Evaluate the cancellation rate AND explicitly interpret its trend over time — specify whether cancellations are rising, falling, seasonal, spiking, or stable, mention any timing or seasonal patterns, and compare to industry norms (typically 1-2%). Identify the month with the largest change in cancellations (increase or decrease), and report that month plus the change magnitude (absolute count or percentage) if available from the stats. Cite numbers and trend direction.
 
 4. **Actionable Takeaway** (1 sentence): Based on delay types and cancellation trends, what is the single most impactful action to improve performance?
 
-Always cite specific numbers and percentages from the stats provided. Be analytical and operational-focused."""},
+Always cite specific numbers and percentages from the stats provided. Be analytical and operational-focused. When discussing cancellations, include a short sentence describing the historical/temporal trend and potential operational causes as inferred from the available metrics."""},
                 {"role": "user", "content": f"{prompt}\n\n{stats_summary}"}
             ],
             max_tokens=400, temperature=0.3
@@ -416,7 +416,7 @@ def auto_insights_panel():
     
     current_filters = (st.session_state.get('filter_context') or {}).get('filters', {})
     if current_filters and len(current_filters) > 0:
-        st.success(f"🎯 **{len(current_filters)} filter(s) active**")
+        st.success(f" **{len(current_filters)} filter(s) active**")
         for col_name, filter_data in current_filters.items():
             values = filter_data.get('values', [])
             display_vals = []
@@ -431,9 +431,9 @@ def auto_insights_panel():
     col1, col2 = st.columns(2)
     with col1:
         if st.button(" Sync Filters", use_container_width=True, type="primary", help="Read current filters from Power BI"):
-            # Start multi-phase sync with fresh nonce to bust cache
+        
             st.session_state.sync_phase = 1
-            st.session_state.sync_nonce = int(time.time() * 1000)  # Use timestamp as unique nonce
+            st.session_state.sync_nonce = int(time.time() * 1000)  
             st.rerun(scope="fragment")
     with col2:
         if st.button(" Regenerate", use_container_width=True, type="secondary"):
