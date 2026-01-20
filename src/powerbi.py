@@ -272,7 +272,7 @@ def get_auto_insights_from_agent(prompt, context):
         
         filter_text = ", ".join(filter_desc) if filter_desc else "No filters (full dataset)"
         
-        stats_summary = f"""📊 **Filtered Data Analysis** ({filter_text}):
+        stats_summary = f""" **Filtered Data Analysis** ({filter_text}):
 
 **Overview:**
 - Total Flights: {stats.get('total_flights', 0):,}
@@ -347,49 +347,46 @@ with left:
 
 @st.fragment
 def auto_insights_panel():
-    st.markdown("### 📊 Auto Insights")
+    st.markdown("###  Auto Insights")
     if 'gen_counter' not in st.session_state: st.session_state.gen_counter = 0
     
-    # Get sync state - nonce stays SAME throughout all phases so st_javascript can return the result
+   
     sync_nonce = st.session_state.get('sync_nonce', 0)
     sync_phase = st.session_state.get('sync_phase', 0)
     
-    # Read from localStorage - use nonce only during sync to bust cache
+
     current_ls_value, current_ts = None, None
     if HAS_ST_JS:
-        # During sync phases, use the same nonce throughout to let the result propagate
+
         use_nonce = sync_nonce if sync_phase > 0 else None
         current_ls_value, current_ts = read_filters_from_localstorage(nonce=use_nonce)
         if current_ls_value and len(current_ls_value) > 0:
             st.session_state.cached_pbi_filters = current_ls_value
             st.session_state.cached_pbi_ts = current_ts
     
-    # Multi-phase sync - keep SAME nonce, just increment phase
-    # Phase 1: st_javascript executes with new nonce, returns 0
-    # Phase 2: st_javascript returns result from phase 1 execution
-    # Phase 3: Apply the result
+ 
     if sync_phase >= 3:
-        # Phase 3: Apply the value - by now st_javascript should have returned fresh data
+     
         st.session_state.sync_phase = 0
         if current_ls_value and len(current_ls_value) > 0:
             st.session_state.filter_context = {'filters': current_ls_value}
             st.session_state.applied_ts = current_ts
             st.session_state.gen_counter += 1
-            st.toast(f"✅ Synced {len(current_ls_value)} filter(s)!")
+            st.toast(f" Synced {len(current_ls_value)} filter(s)!")
         else:
             # Fallback: use the cached values if direct read failed
             cached = st.session_state.get('cached_pbi_filters', {})
             if cached and len(cached) > 0:
                 st.session_state.filter_context = {'filters': cached}
                 st.session_state.gen_counter += 1
-                st.toast(f"✅ Synced {len(cached)} filter(s) from cache!")
+                st.toast(f" Synced {len(cached)} filter(s) from cache!")
             else:
-                st.toast("⏳ No filters detected - try again")
+                st.toast(" No filters detected - try again")
     elif sync_phase > 0:
-        # Keep rerunning with SAME nonce until we reach phase 3
+     
         st.session_state.sync_phase = sync_phase + 1
-        # DON'T increment nonce - keep it the same so st_javascript can return result
-        time.sleep(0.15)  # Small delay to allow JS to execute
+ 
+        time.sleep(0.15)  
         st.rerun(scope="fragment")
     
     url_filters = get_filters_from_url()
@@ -429,17 +426,17 @@ def auto_insights_panel():
                     except: display_vals.append(str(v))
                 else: display_vals.append(str(v))
             st.caption(f"• **{col_name}**: {' to '.join(display_vals)}")
-    else: st.caption("📊 Analyzing full dataset")
+    else: st.caption(" Analyzing full dataset")
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔄 Sync Filters", use_container_width=True, type="primary", help="Read current filters from Power BI"):
+        if st.button(" Sync Filters", use_container_width=True, type="primary", help="Read current filters from Power BI"):
             # Start multi-phase sync with fresh nonce to bust cache
             st.session_state.sync_phase = 1
             st.session_state.sync_nonce = int(time.time() * 1000)  # Use timestamp as unique nonce
             st.rerun(scope="fragment")
     with col2:
-        if st.button("✨ Regenerate", use_container_width=True, type="secondary"):
+        if st.button(" Regenerate", use_container_width=True, type="secondary"):
             st.session_state.gen_counter += 1
             st.session_state.pop('last_gen_counter', None)
             st.rerun(scope="fragment")
@@ -447,7 +444,7 @@ def auto_insights_panel():
     st.divider()
 
     with st.container(border=True):
-        st.markdown("#### 💡 Current Insights")
+        st.markdown("####  Current Insights")
         current_context = st.session_state.get('filter_context')
         current_gen = st.session_state.get('gen_counter', 0)
         last_gen = st.session_state.get('last_gen_counter', -1)
@@ -455,7 +452,7 @@ def auto_insights_panel():
         cached_insights = st.session_state.get('current_insights')
         
         if current_context and need_regenerate:
-            with st.spinner("🤖 Generating insights..."):
+            with st.spinner(" Generating insights..."):
                 try:
                     prompt = generate_auto_insight_prompt(current_context)
                     insights = get_auto_insights_from_agent(prompt, current_context)
@@ -465,16 +462,16 @@ def auto_insights_panel():
                     st.markdown(insights)
                     st.session_state.insights_history.insert(0, {'timestamp': time.time(), 'context': current_context, 'insights': insights})
                     st.session_state.insights_history = st.session_state.insights_history[:10]
-                except Exception as e: st.error(f"❌ {str(e)}")
+                except Exception as e: st.error(f" {str(e)}")
         elif cached_insights:
             st.markdown(cached_insights)
-            st.caption(f"🕐 Generated at {time.strftime('%H:%M:%S', time.localtime(st.session_state.get('last_gen_time', time.time())))}")
+            st.caption(f" Generated at {time.strftime('%H:%M:%S', time.localtime(st.session_state.get('last_gen_time', time.time())))}")
         else: st.info("Click 'Sync Filters' to load Power BI filters, or 'Regenerate' for fresh insights.")
     
     st.divider()
     
     if st.session_state.insights_history:
-        with st.expander("📜 Recent Insights", expanded=False):
+        with st.expander(" Recent Insights", expanded=False):
             for i, item in enumerate(st.session_state.insights_history[:5]):
                 st.caption(f"**{time.strftime('%H:%M:%S', time.localtime(item['timestamp']))}**")
                 st.markdown(item['insights'])
@@ -482,7 +479,7 @@ def auto_insights_panel():
 
 @st.fragment
 def ask_question_panel():
-    st.markdown("### ❓ Ask a Question")
+    st.markdown("###  Ask a Question")
     with st.form("question_form"):
         question = st.text_area("Your question:", placeholder="e.g., What's the delay trend?", height=80)
         submitted = st.form_submit_button("Ask", use_container_width=True)
