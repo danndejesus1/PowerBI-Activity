@@ -28,7 +28,7 @@ def load_dax_documentation():
         return _dax_docs_cache
     
     try:
-        # Try current directory first, then parent directory
+
         doc_paths = [
             'dax_documentation.txt',
             os.path.join(os.path.dirname(__file__), '..', 'dax_documentation.txt'),
@@ -55,8 +55,7 @@ def get_relevant_dax_docs(query: str) -> str:
     
     sections = full_docs.split('\n## ')
     relevant = []
-    
-    # Keywords mapping for DAX functions
+
     if any(word in query_lower for word in ['delay', 'breakdown', 'compare', 'types', 'categories']):
         relevant.extend([s for s in sections if 'UNION' in s or 'compare multiple' in s.lower()])
     
@@ -75,8 +74,7 @@ def get_relevant_dax_docs(query: str) -> str:
     # For auto-insights: add quick query patterns
     if any(word in query_lower for word in ['insight', 'summary', 'overview', 'quick']):
         relevant.extend([s for s in sections if 'Common Patterns' in s or 'Quick Stats' in s])
-    
-    # Always include critical rules
+
     relevant.extend([s for s in sections if 'Critical Rules' in s])
     
     if not relevant:
@@ -170,12 +168,12 @@ def get_cached_schema():
     
     current_time = time.time()
     
-    # Cache for 1 hour (3600 seconds)
+  
     if _schema_cache is not None and _schema_cache_time is not None:
         if current_time - _schema_cache_time < 3600:
             return _schema_cache
     
-    # Refresh cache
+  
     _schema_cache = discover_table_columns()
     _schema_cache_time = current_time
     return _schema_cache
@@ -273,7 +271,7 @@ def quick_stats_tool(metric: str) -> str:
     """
     metric_lower = metric.lower()
     
-    # Map common metrics to simple DAX queries
+   
     queries = {
         'total_flights': "EVALUATE ROW(\"Total Flights\", COUNTROWS('flights'))",
         'avg_delay': "EVALUATE ROW(\"Avg Delay\", AVERAGE('flights'[DEPARTURE_DELAY]))",
@@ -300,7 +298,7 @@ def quick_stats_tool(metric: str) -> str:
 def compare_tool(dimension: str, top_n: int = 5) -> str:
     """
     Compare values across a dimension (like airlines, airports, months).
-    Input: dimension name ('airline', 'origin', 'destination', 'month') and optional top_n (default 5)
+    Input: dimension name ('airline', 'origin', 'desti  nation', 'month') and optional top_n (default 5)
     Returns top performers for that dimension.
     """
     dimension_lower = dimension.lower()
