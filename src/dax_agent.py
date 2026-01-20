@@ -18,10 +18,6 @@ from langchain_core.messages import HumanMessage
 
 load_dotenv()
 
-# ============================================================================
-# DAX Documentation Tool
-# ============================================================================
-
 _dax_docs_cache = None
 
 def load_dax_documentation():
@@ -89,10 +85,6 @@ def get_relevant_dax_docs(query: str) -> str:
     
     unique_sections = list(dict.fromkeys(relevant))
     return '\n\n## '.join(unique_sections[:5])
-
-# ============================================================================
-# Power BI Helper Functions
-# ============================================================================
 
 AAD_TENANT_ID = os.getenv("AAD_TENANT_ID")
 AAD_CLIENT_ID = os.getenv("AAD_CLIENT_ID")
@@ -237,10 +229,6 @@ def format_dax_results(dax_response):
                     formatted.append(json.dumps(rows, indent=2))
     return "\n\n".join(formatted) if formatted else "No data found"
 
-# ============================================================================
-# LangChain Tools Definition
-# ============================================================================
-
 @tool
 def dax_syntax_tool(query: str) -> str:
     """
@@ -357,10 +345,6 @@ def compare_tool(dimension: str, top_n: int = 5) -> str:
     if err:
         return f"Error: {err}"
     return format_dax_results(result)
-
-# ============================================================================
-# Agent Initialization
-# ============================================================================
 
 SYSTEM_PROMPT = """You are a DAX query expert for Power BI flight data analysis.
 
