@@ -258,6 +258,48 @@ def get_auto_insights_from_agent(prompt, context):
             val = extract_value(result)
             stats['avg_arrival_delay'] = round(val, 1) if val else 0
         
+        # Delay Type Breakdowns - sum of delay minutes by type
+        delay_types = [
+            ('AIR_SYSTEM_DELAY', 'air_system_delay'),
+            ('AIRLINE_DELAY', 'airline_delay'),
+            ('LATE_AIRCRAFT_DELAY', 'late_aircraft_delay'),
+            ('SECURITY_DELAY', 'security_delay'),
+            ('WEATHER_DELAY', 'weather_delay')
+        ]
+        
+        for col_name, stat_key in delay_types:
+            query = f"EVALUATE ROW(\"Total\", CALCULATE(SUM('flights'[{col_name}]), {filter_clause}))" if filter_clause else f"EVALUATE ROW(\"Total\", SUM('flights'[{col_name}]))"
+            result, err = execute_dax_query(query)
+            if not err and result:
+                val = extract_value(result)
+                stats[stat_key] = round(val, 1) if val else 0
+            else:
+                stats[stat_key] = 0
+        
+        # Calculate total delay minutes for percentage calculation
+        total_delay_minutes = sum([
+            stats.get('air_system_delay', 0),
+            stats.get('airline_delay', 0),
+            stats.get('late_aircraft_delay', 0),
+            stats.get('security_delay', 0),
+            stats.get('weather_delay', 0)
+        ])
+        
+        # Calculate percentages for each delay type
+        if total_delay_minutes > 0:
+            stats['air_system_delay_pct'] = round((stats.get('air_system_delay', 0) / total_delay_minutes) * 100, 1)
+            stats['airline_delay_pct'] = round((stats.get('airline_delay', 0) / total_delay_minutes) * 100, 1)
+            stats['late_aircraft_delay_pct'] = round((stats.get('late_aircraft_delay', 0) / total_delay_minutes) * 100, 1)
+            stats['security_delay_pct'] = round((stats.get('security_delay', 0) / total_delay_minutes) * 100, 1)
+            stats['weather_delay_pct'] = round((stats.get('weather_delay', 0) / total_delay_minutes) * 100, 1)
+        else:
+            stats['air_system_delay_pct'] = 0
+            stats['airline_delay_pct'] = 0
+            stats['late_aircraft_delay_pct'] = 0
+            stats['security_delay_pct'] = 0
+            stats['weather_delay_pct'] = 0
+        
+        stats['total_delay_minutes'] = round(total_delay_minutes, 1)
    
         total = stats.get('total_flights', 0) or 1  # Avoid division by zero
         stats['on_time_pct'] = round((stats.get('on_time', 0) / total) * 100, 1)
@@ -275,7 +317,7 @@ def get_auto_insights_from_agent(prompt, context):
 - Total Flights: {stats.get('total_flights', 0):,}
 - On-Time Performance: {stats.get('on_time_pct', 0)}% ({stats.get('on_time', 0):,} flights)
 
-**Delay Breakdown:**
+**Delay Breakdown by Severity:**
 - Average Departure Delay: {stats.get('avg_delay', 'N/A')} minutes
 - Average Arrival Delay: {stats.get('avg_arrival_delay', 'N/A')} minutes
 - Min Delay: {stats.get('min_delay', 'N/A')} min | Max Delay: {stats.get('max_delay', 'N/A')} min
@@ -283,6 +325,14 @@ def get_auto_insights_from_agent(prompt, context):
 - Slight Delay (1-15 min): {stats.get('slight_delay', 0):,} ({stats.get('slight_delay_pct', 0)}%)
 - Moderate Delay (16-60 min): {stats.get('moderate_delay', 0):,} ({stats.get('moderate_delay_pct', 0)}%)
 - Severe Delay (>60 min): {stats.get('severe_delay', 0):,} ({stats.get('severe_delay_pct', 0)}%)
+
+**Delay Breakdown by Type (Pie Chart Data):**
+- Total Delay Minutes: {stats.get('total_delay_minutes', 0):,.1f} minutes
+- Air System Delays: {stats.get('air_system_delay', 0):,.1f} min ({stats.get('air_system_delay_pct', 0)}%)
+- Airline Delays: {stats.get('airline_delay', 0):,.1f} min ({stats.get('airline_delay_pct', 0)}%)
+- Late Aircraft Delays: {stats.get('late_aircraft_delay', 0):,.1f} min ({stats.get('late_aircraft_delay_pct', 0)}%)
+- Security Delays: {stats.get('security_delay', 0):,.1f} min ({stats.get('security_delay_pct', 0)}%)
+- Weather Delays: {stats.get('weather_delay', 0):,.1f} min ({stats.get('weather_delay_pct', 0)}%)
 
 **Cancellations & Diversions:**
 - Cancelled Flights: {stats.get('cancelled', 0):,} ({stats.get('cancellation_rate', 0)}%)
@@ -297,20 +347,20 @@ The dashboard shows:
 - **Total Flights Card**: Volume of flights analyzed
 - **Avg Delay Card**: Average departure delay in minutes
 - **Cancellation Rate Card**: Percentage of cancelled flights
-- **Delay Breakdown Pie Chart**: Distribution of delay minutes by type (Air System Delays, Airline Delays, Late Aircraft Delays, Security Delays, Weather Delays)
+- **Delay Breakdown Pie Chart**: Distribution of delay minutes by type (Air System Delays, Airline Delays, Late Aircraft Delays, Security Delays, Weather Delays) - use the "Delay Breakdown by Type" stats provided
 - **Cancellations Over Time**: Monthly trend of cancellations showing seasonal patterns — you MUST interpret cancellation trends over time (e.g., increasing/decreasing, seasonality, spikes, and likely causes) when producing the Disruption Assessment.
 
 Structure your response with exactly 4 numbered insights:
 
 1. **Performance Summary** (1-2 sentences): Assess overall on-time rate and total flight volume. What does the average delay indicate about operational health?
 
-2. **Operational Insight** (2-3 sentences): Analyze the Delay Breakdown pie chart. Which delay type dominates? What percentage does it represent? What operational factors does this suggest (e.g., weather impact, airline operations, infrastructure)?
+2. **Operational Insight** (2-3 sentences): Analyze the Delay Breakdown by Type data. Which delay type dominates (Air System, Airline, Late Aircraft, Security, or Weather)? What percentage does it represent? What operational factors does this suggest (e.g., weather impact, airline operations, infrastructure issues, cascading delays from late aircraft)?
 
 3. **Disruption Assessment** (1-2 sentences): Evaluate the cancellation rate AND explicitly interpret its trend over time — specify whether cancellations are rising, falling, seasonal, spiking, or stable, mention any timing or seasonal patterns, and compare to industry norms (typically 1-2%). Identify the month with the largest change in cancellations (increase or decrease), and report that month plus the change magnitude (absolute count or percentage) if available from the stats. Cite numbers and trend direction.
 
-4. **Actionable Takeaway** (1 sentence): Based on delay types and cancellation trends, what is the single most impactful action to improve performance?
+4. **Actionable Takeaway** (1 sentence): Based on the dominant delay type and cancellation trends, what is the single most impactful action to improve performance?
 
-Always cite specific numbers and percentages from the stats provided. Be analytical and operational-focused. When discussing cancellations, include a short sentence describing the historical/temporal trend and potential operational causes as inferred from the available metrics."""},
+Always cite specific numbers and percentages from the stats provided, especially from the "Delay Breakdown by Type" section. Be analytical and operational-focused. When discussing cancellations, include a short sentence describing the historical/temporal trend and potential operational causes as inferred from the available metrics."""},
                 {"role": "user", "content": f"{prompt}\n\n{stats_summary}"}
             ],
             max_tokens=400, temperature=0.3
